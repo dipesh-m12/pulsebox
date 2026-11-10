@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Pulsebox — 3D Beat Maker</title>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#141230;color:#f1eeff;font-family:"Inter",system-ui,sans-serif;user-select:none;-webkit-user-select:none}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+.ui{position:fixed;z-index:4}
+.brand{top:20px;left:22px;pointer-events:none}
+.brand b{font:700 20px "Unbounded",sans-serif;letter-spacing:-.01em}
+.brand span{display:block;margin-top:6px;font-size:12.5px;color:#a9a3d6}
+.legend{top:22px;right:22px;display:flex;gap:14px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#a9a3d6;pointer-events:none}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.bar{left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:14px;padding:10px 16px 10px 10px;border-radius:999px;background:rgba(32,29,70,.78);border:1px solid rgba(255,255,255,.13);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);white-space:nowrap}
+.bar button{all:unset;cursor:pointer;font-weight:600;font-size:13px;padding:9px 14px;border-radius:999px;color:#d9d4ff;transition:.15s}
+.bar button:hover{background:rgba(255,255,255,.1)}
+.bar button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+#play{background:#ff5d73;color:#fff;font:700 13px "Unbounded",sans-serif;padding:13px 24px;min-width:104px;text-align:center}
+#play:hover{background:#ff7186}
+#play.on{background:#f1eeff;color:#141230}
+.bar label{font-size:11px;font-weight:600;letter-spacing:.08em;color:#a9a3d6;display:flex;align-items:center;gap:8px}
+.bar input{width:96px;accent-color:#ffd166}
+.bar output{color:#f1eeff;min-width:26px;font-variant-numeric:tabular-nums}
+@media (max-width:760px){
+  .brand span,.legend{display:none}
+  .bar{bottom:12px;gap:4px;padding:8px 10px 8px 8px}
+  .bar button{padding:8px 9px;font-size:12px}#play{padding:11px 14px;min-width:78px}
+  .bar label span{display:none}.bar input{width:64px}
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="ui brand"><b>Pulsebox</b><span id="tip">Tap tiles to add sounds, then press Play</span></div>
+<div class="ui legend"><span><i style="background:#9b72ff"></i>MELODY</span><span><i style="background:#ffd166"></i>HI-HAT</span><span><i style="background:#ff5d73"></i>KICK</span></div>
+<div class="ui bar">
+  <button id="play">Play</button>
+  <label><span>TEMPO</span><input id="bpm" type="range" min="60" max="160" value="108" aria-label="Tempo"><output id="bv">108</output></label>
+  <button id="rand">Shuffle</button>
+  <button id="clear">Clear</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+const $=id=>document.getElementById(id);
+const COLS=16,ROWS=8,KEY='pulsebox-v1';
+const RC=['#ff5d73','#ffd166','#06d6a0','#1ec8c8','#3fa7ff','#6f86ff','#9b72ff','#e06bfa'];
+const FREQ=[0,0,261.63,293.66,329.63,392,440,523.25];
+let grid=[];
+const blank=()=>Array.from({length:ROWS},()=>new Array(COLS).fill(0));
+function demo(){
+  grid=blank();
+  [0,4,8,12,14].forEach(c=>grid[0][c]=1);[2,6,10,13,15].forEach(c=>grid[1][c]=1);
+  [[2,0],[4,2],[5,4],[7,6],[5,8],[4,10],[3,11],[2,12],[6,14]].forEach(n=>grid[n[0]][n[1]]=1);
+}
+function shuffle(){
+  grid=blank();
+  for(let c=0;c<COLS;c++){
+    if(c%4===0||Math.random()<.1)grid[0][c]=1;
+    if(c%4===2||Math.random()<.2)grid[1][c]=1;
+    if(Math.random()<.55)grid[2+(Math.random()*6|0)][c]=1;
+    if(c%4===0&&Math.random()<.5)grid[2+(Math.random()*3|0)][c]=1;
+  }
+}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(grid))}catch(e){}};
+(function(){let d=null;try{d=JSON.parse(localStorage.getItem(KEY))}catch(e){}
+  if(Array.isArray(d)&&d.length===ROWS&&d.every(r=>Array.isArray(r)&&r.length===COLS))grid=d;else demo()})();
+
+/* ---------- sound ---------- */
+let ac=null,out=null,noise=null,playing=false,bpm=108,step=0,nextT=0,timer=0,queue=[];
+function audio(){
+  if(!ac){
+    const A=window.AudioContext||window.webkitAudioContext;if(!A)return null;
+    try{ac=new A()}catch(e){return null}
+    const comp=ac.createDynamicsCompressor();comp.connect(ac.destination);
+    out=ac.createGain();out.gain.value=.55;out.connect(comp);
+    const dl=ac.createDelay(1),fb=ac.createGain(),wet=ac.createGain();dl.delayTime.value=.27;fb.gain.value=.3;wet.gain.value=.22;
+    out.connect(dl);dl.connect(fb);fb.connect(dl);dl.connect(wet);wet.connect(comp);
+    noise=ac.createBuffer(1,ac.sampleRate*.2,ac.sampleRate);const ch=noise.getChannelData(0);for(let i=0;i<ch.length;i++)ch[i]=Math.random()*2-1;
+  }
+  if(ac.state==='suspended')ac.resume().catch(()=>{});
+  return ac;
+}
+function env(peak,t,len){const g=ac.createGain();g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(peak,t+.006);g.gain.exponentialRampToValueAtTime(.0001,t+len);g.connect(out);return g}
+function sound(r,t){
+  if(!ac)return;
+  if(r===0){const o=ac.createOscillator(),g=env(.95,t,.3);o.frequency.setValueAtTime(155,t);o.frequency.exponentialRampToValueAtTime(42,t+.13);o.connect(g);o.start(t);o.stop(t+.32)}
+  else if(r===1){const s=ac.createBufferSource(),f=ac.createBiquadFilter(),g=env(.3,t,.07);s.buffer=noise;f.type='highpass';f.frequency.value=7000;s.connect(f);f.connect(g);s.start(t);s.stop(t+.09)}
+  else{[[1,'triangle',.3],[2,'sine',.07]].forEach(v=>{const o=ac.createOscillator(),g=env(v[2],t,.55);o.type=v[1];o.frequency.value=FREQ[r]*v[0];o.connect(g);o.start(t);o.stop(t+.6)})}
+}
+function tick(){
+  while(nextT<ac.currentTime+.12){
+    for(let r=0;r<ROWS;r++)if(grid[r][step])sound(r,nextT);
+    queue.push([step,nextT]);nextT+=60/bpm/4;step=(step+1)%COLS;
+  }
+}
+function toggle(){
+  if(playing){playing=false;clearInterval(timer);queue=[];cur=-1}
+  else{
+    if(!audio()){$('tip').textContent='Sound is not available in this browser';return}
+    playing=true;step=0;nextT=ac.currentTime+.06;tick();timer=setInterval(tick,25);
+  }
+  $('play').textContent=playing?'Stop':'Play';$('play').classList.toggle('on',playing);
+}
+$('play').onclick=toggle;
+$('bpm').oninput=e=>{bpm=+e.target.value;$('bv').textContent=bpm};
+$('rand').onclick=()=>{shuffle();save()};
+$('clear').onclick=()=>{grid=blank();save()};
+addEventListener('keydown',e=>{if(e.key===' '&&e.target.tagName!=='BUTTON'){e.preventDefault();toggle()}});
+
+/* ---------- scene ---------- */
+if(!window.THREE){$('tip').textContent='3D view needs WebGL, which did not load';return}
+let R;try{R=new THREE.WebGLRenderer({canvas:$('c'),antialias:true})}catch(e){$('tip').textContent='3D view needs WebGL, which is switched off';return}
+R.setPixelRatio(Math.min(devicePixelRatio,2));R.outputEncoding=THREE.sRGBEncoding;
+const scene=new THREE.Scene();scene.background=new THREE.Color('#141230');scene.fog=new THREE.Fog('#141230',22,48);
+const cam=new THREE.PerspectiveCamera(42,1,.1,120);
+scene.add(new THREE.HemisphereLight(0xcfc8ff,0x1a1640,.9));
+const dl=new THREE.DirectionalLight(0xffffff,.55);dl.position.set(-6,14,8);scene.add(dl);
+
+const board=new THREE.Group();scene.add(board);
+const geo=new THREE.BoxGeometry(.86,1,.86);geo.translate(0,.5,0);
+const OFF=new THREE.Color('#2b2760'),OFFB=new THREE.Color('#353075'),HEAD=new THREE.Color('#4b4699');
+const tiles=[],meshes=[];
+for(let r=0;r<ROWS;r++){tiles.push([]);for(let c=0;c<COLS;c++){
+  const m=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color:OFF.clone(),roughness:.45,emissive:RC[r],emissiveIntensity:0}));
+  m.position.set(c-7.5,0,3.5-r);m.scale.y=.22;m.userData={r,c,pulse:0,on:new THREE.Color(RC[r])};
+  board.add(m);tiles[r].push(m);meshes.push(m);
+}}
+const base=new THREE.Mesh(new THREE.BoxGeometry(17,.3,9),new THREE.MeshStandardMaterial({color:'#1b1840',roughness:.8}));
+base.position.y=-.16;board.add(base);
+const head=new THREE.Mesh(new THREE.BoxGeometry(.94,.05,8.3),new THREE.MeshBasicMaterial({color:'#ffffff',transparent:true,opacity:0}));
+head.position.y=.02;board.add(head);
+/* drifting dust for depth */
+const dp=new Float32Array(900);for(let i=0;i<300;i++)dp.set([(Math.random()-.5)*50,Math.random()*16-2,(Math.random()-.5)*40-6],i*3);
+const dg=new THREE.BufferGeometry();dg.setAttribute('position',new THREE.BufferAttribute(dp,3));
+const dust=new THREE.Points(dg,new THREE.PointsMaterial({color:0x9b8cff,size:.09,transparent:true,opacity:.7}));scene.add(dust);
+
+/* pointer: tap or drag across tiles to paint */
+const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();let paint=-1,lastTile=null;
+function tileAt(e){mouse.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);ray.setFromCamera(mouse,cam);const h=ray.intersectObjects(meshes,false)[0];return h?h.object:null}
+function setTile(m){
+  if(!m||m===lastTile)return;lastTile=m;const u=m.userData;
+  if(paint<0)paint=grid[u.r][u.c]?0:1;
+  if(grid[u.r][u.c]===paint)return;
+  grid[u.r][u.c]=paint;save();
+  if(paint){u.pulse=.7;if(!playing&&audio())sound(u.r,ac.currentTime+.01)}
+}
+const cv=R.domElement;
+cv.addEventListener('pointerdown',e=>{paint=-1;lastTile=null;setTile(tileAt(e));try{cv.setPointerCapture(e.pointerId)}catch(_){}});
+cv.addEventListener('pointermove',e=>{if(paint>=0&&(e.buttons||e.pointerType==='touch'))setTile(tileAt(e))});
+['pointerup','pointercancel'].forEach(n=>cv.addEventListener(n,()=>{paint=-1;lastTile=null}));
+
+let tall=false,cur=-1,thump=0,t=0,last=performance.now(),mx=0,my=0;
+const calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
+addEventListener('pointermove',e=>{if(e.pointerType==='mouse'){mx=e.clientX/innerWidth-.5;my=e.clientY/innerHeight-.5}});
+function resize(){
+  R.setSize(innerWidth,innerHeight,false);cam.aspect=innerWidth/innerHeight;tall=cam.aspect<.9;
+  cam.fov=tall?52:42;cam.updateProjectionMatrix();board.rotation.y=tall?-Math.PI/2:0;
+}
+addEventListener('resize',resize);resize();
+
+function frame(now){
+  requestAnimationFrame(frame);
+  const dt=Math.min((now-last)/1000,.05);last=now;t+=dt;
+  if(playing&&ac){
+    while(queue.length&&queue[0][1]<=ac.currentTime){
+      cur=queue.shift()[0];
+      for(let r=0;r<ROWS;r++)if(grid[r][cur]){tiles[r][cur].userData.pulse=1;if(r===0)thump=1}
+    }
+  }
+  const k=1-Math.exp(-dt*14);
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+    const m=tiles[r][c],u=m.userData,on=grid[r][c];
+    u.pulse=Math.max(0,u.pulse-dt*3.2);
+    m.scale.y+=((on?.55:.22)+u.pulse*1.5-m.scale.y)*k;
+    m.material.color.lerp(on?u.on:(c===cur?HEAD:(c%4===0?OFFB:OFF)),k);
+    m.material.emissiveIntensity=on?.22+u.pulse*.9:0;
+  }
+  head.material.opacity+=((playing?.16:0)-head.material.opacity)*k;
+  if(cur>=0)head.position.x+=(cur-7.5-head.position.x)*(1-Math.exp(-dt*30));
+  thump=Math.max(0,thump-dt*5);
+  dust.rotation.y=t*.02;dust.position.y=thump*.25;
+
+  const px=calm?0:mx,py=calm?0:my,z=1-thump*.012;
+  if(tall){cam.position.set(px*2,25*z,8.5*z);cam.lookAt(0,0,1.6)}
+  else{const s=Math.max(1,1.45/cam.aspect);cam.position.set(px*3,(12.5-py*1.5)*s*z,11.5*s*z);cam.lookAt(0,0,1.1)}
+  R.render(scene,cam);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
